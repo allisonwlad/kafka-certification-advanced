@@ -16,6 +16,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.elasticsearch.action.bulk.BulkRequest;
+import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.RequestOptions;
@@ -26,6 +28,9 @@ import org.elasticsearch.client.RestHighLevelClient;
 import org.elasticsearch.common.xcontent.XContentType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.gson.JsonParser;
+
 
 public class ElasticSearchConsumer {
 	
@@ -59,6 +64,8 @@ public class ElasticSearchConsumer {
 		properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
 		properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, "Elastic-demo");
 		properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+		properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+		properties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "100");
 				
 		// create the consumer
 		KafkaConsumer<String, String> consumer = new KafkaConsumer<String, String>(properties);
@@ -75,14 +82,28 @@ public class ElasticSearchConsumer {
 		while (true) {
 			ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
 			
+			Integer recordCounts = records.count();
+			logger.info("recebendo "+ recordCounts +" registros");
+			BulkRequest bulkRequest = new BulkRequest();
 			for(ConsumerRecord<String, String> record : records){
+				//estrategia de geração de ID usando o kafka
+				//String id = record.topic() +"_"+record.partition()+"_"+record.offset();
+				// estrategia usando o id_str da mensagem vinda do twitter
+				String id = extractIdFromTweet(record.value());
 				//insert data into elastic
-				IndexRequest indexRequest = new IndexRequest("twitter", "tweets")
+				IndexRequest indexRequest = new IndexRequest("twitter", "tweets", id)
 						.source(record.value(), XContentType.JSON);
-				IndexResponse indexResponse = client.index(indexRequest, RequestOptions.DEFAULT);
-				String id = indexResponse.getId();
 				
-				logger.info(id);
+				bulkRequest.add(indexRequest);//faz uma inserção bulk
+				
+				//IndexResponse indexResponse = client.index(indexRequest, RequestOptions.DEFAULT); processamento linha a linha
+				
+			}
+			if(recordCounts>0){
+				BulkResponse bulkResponse = client.bulk(bulkRequest, RequestOptions.DEFAULT);
+				logger.info("Commit registros");
+				consumer.commitSync();
+				logger.info("Commit finalizado");
 				try {
 					Thread.sleep(1000);
 				} catch (InterruptedException e) {
@@ -92,5 +113,10 @@ public class ElasticSearchConsumer {
 			}
 		}
 		//client.close();
+	}
+	private static JsonParser jsonParser = new JsonParser();
+	private static String extractIdFromTweet(String value) {
+		// TODO Auto-generated method stub
+		return jsonParser.parse(value).getAsJsonObject().get("id_str").getAsString();
 	}
 }
